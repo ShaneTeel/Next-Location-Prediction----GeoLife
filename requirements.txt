@@ -4,7 +4,6 @@ folium
 streamlit
 streamlit-folium
 requests
-os
 datetime
 geopy
 shapely
