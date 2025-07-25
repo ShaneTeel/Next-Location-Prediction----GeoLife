@@ -1,11 +1,8 @@
 import streamlit as st
 import requests
 import pandas as pd
-import os
-import plotly.express as px
-import plotly.graph_objects as go
 import folium
-from streamlit_folium import st_folium, folium_static
+from streamlit_folium import folium_static
 
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:8000")
