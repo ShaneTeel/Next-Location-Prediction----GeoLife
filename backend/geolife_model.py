@@ -215,7 +215,7 @@ def cluster_geolife_user(uid, distance, min_k):
     ml_df = ml_df.loc[:, ['uid', 'lat_origin', 'lng_origin', 'cluster_origin', 'cluster_origin_lat', 'cluster_origin_lng', 'datetime', 'month', 'day', 'day_of_week', 'hour_in_day', 'minute_in_hour', 'timedelta', 'dest_lat', 'dest_lng', 'cluster_dest', 'cluster_dest_lat', 'cluster_dest_lng']]
     return ml_df, scores
 
-def model_pipe(ml_df, thresh:int=6):
+def model_pipe(ml_df, thresh:int=6, min_samples:int=5):
     '''
     Purpose: Generate a next-location prediction model for a single user in the GeoLife dataset
 
@@ -236,12 +236,11 @@ def model_pipe(ml_df, thresh:int=6):
     5. Create Metadata and assing to model
     6. Return fitted model
     '''
-    ml_df = pd.DataFrame().from_dict(ml_df, orient='columns')
 
-    origin_mask = ml_df['cluster_origin'].value_counts()
-    dest_mask = ml_df['cluster_dest'].value_counts()
+    origin_mask = ml_df.loc[:, 'cluster_origin'].value_counts()
+    dest_mask = ml_df.loc[:, 'cluster_dest'].value_counts()
 
-    final_ml_df = ml_df[(ml_df['cluster_origin'].isin(origin_mask[origin_mask.values >= thresh].index)) & (ml_df[['cluster_dest'].isin(dest_mask[dest_mask.values >= thresh].index)])]
+    final_ml_df = ml_df[(ml_df.loc[:, 'cluster_origin'].isin(origin_mask[origin_mask.values > thresh].index)) & (ml_df.loc[:, 'cluster_dest'].isin(dest_mask[dest_mask.values > thresh].index))]
 
     # Create Variables
     X = final_ml_df.drop(columns='cluster_dest').reset_index(drop=True)
@@ -271,7 +270,7 @@ def model_pipe(ml_df, thresh:int=6):
 
     # Instatiate Over-Sampler
     sampler = SMOTENC(
-        k_neighbors=4, 
+        k_neighbors=min_samples, 
         categorical_features=[n for n in range(0, 15)],  
         random_state=42, 
         sampling_strategy='all'
@@ -313,19 +312,100 @@ def model_pipe(ml_df, thresh:int=6):
             'Avg. Precision AUC': AP_AUC,
             "Cohen's Kappa Score": cohen_kappa
     }
-    return scores
+    return scores, final_ml_df
 
-def load_geolife_model():
+def save_model(ml_df, uid, thresh:int=6, min_samples:int=5):
+    '''
+    Purpose: Generate a next-location prediction model for a single user in the GeoLife dataset
 
-    model_path = "../../models/geolife_nlp.pkl"
-        
+    Parameters: The DataFrame returned by the `feature_engineer()` function
+    
+    Actions:
+    1. Create Variables `X` and `y`
+    2. Create Training & Test Splits (for evaluating model performance)
+    3. Instatiate Objects for modeling
+            - `MinMaxScaler()` for numeric inputs
+            - `OneHotEncoder()` for categorical inputs
+            - `ColumnTransformer()` to handle preprocessing
+            - `SMOTENC()` to oversample minority classes
+            - `RandomForestClassifier()` as the primary estimator
+            - `OnevsOneClassifer()` as the strategy for handling the classes
+            - `Pipeline()` for bringing everything together
+    4. Fit/Train, Predict, and Score model
+    5. Create Metadata and assing to model
+    6. Return fitted model
+    '''
+
+    origin_mask = ml_df.loc[:, 'cluster_origin'].value_counts()
+    dest_mask = ml_df.loc[:, 'cluster_dest'].value_counts()
+
+    final_ml_df = ml_df[(ml_df.loc[:, 'cluster_origin'].isin(origin_mask[origin_mask.values > thresh].index)) & (ml_df.loc[:, 'cluster_dest'].isin(dest_mask[dest_mask.values > thresh].index))]
+
+    # Create Variables
+    X = final_ml_df.drop(columns='cluster_dest').reset_index(drop=True)
+    y = final_ml_df['cluster_dest'].reset_index(drop=True)
+
+    # Instatiate Preprocessor Objects
+    scaler = MinMaxScaler()
+    ohe = OneHotEncoder(sparse_output=False, drop='first', dtype=int, handle_unknown='ignore')
+
+    # Define Features for Preprocessing by type
+    categorical_features = ['uid', 'month', 'day_of_week']
+    numeric_features = ['lat_origin', 'lng_origin', 'day', 'hour_in_day', 'minute_in_hour', 'timedelta']
+
+    # Instatiate Column Transformer Object
+    # Preprocessor Object
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('cat', ohe, categorical_features),
+            ('num', scaler, numeric_features),
+        ],
+            remainder='drop',
+            force_int_remainder_cols=False
+    )
+
+    # Instatiate Over-Sampler
+    sampler = SMOTENC(
+        k_neighbors=min_samples, 
+        categorical_features=[n for n in range(0, 15)],  
+        random_state=42, 
+        sampling_strategy='all'
+    )
+
+    # Instatiate Classifier Objects
+    classifier = RandomForestClassifier(random_state=42, bootstrap=True, oob_score=True, class_weight='balanced_subsample')
+    strategizer = OneVsOneClassifier(classifier)
+
+    # Bring it All Together with Instatiated Model Pipeline
+    model_pipe = Pipeline(
+        steps=[
+            ('preprocess', preprocessor),
+            ('sampler', sampler),
+            ('classifier', strategizer)
+        ]
+    )
+
+    # Fit/Train Model
+    model_pipe.fit(X, y)
+    uid = int(uid) 
+    # Feature Importance for Metadata
+    feature_importances = {name: stat for name, stat in zip(preprocessor.get_feature_names_out(), np.mean([arr for arr in [estimator.feature_importances_ for estimator in strategizer.estimators_]], axis=0))}
+    file_path = f'../model/geolife_nlp_user{uid}.pkl'
+    jb.dump(model_pipe, file_path) 
+    final_ml_df.to_csv(f'../model/geolife_clusters_user{uid}.csv', index=False)
+    return final_ml_df
+
+def load_geolife_model(uid):
+    model_path = f"../model/geolife_nlp_user{uid}.pkl"
+    df = pd.read_csv(f'../model/geolife_clusters_user{uid}.csv')
+    
     model = jb.load(model_path)
     
     feature_names = ['uid', 'lat_origin', 'lng_origin', 'timedelta', 'month', 'day', 
                      'day_of_week', 'hour_in_day', 'minute_in_hour'
                     ]
     
-    return model, feature_names
+    return model, feature_names, df
 
 if __name__ == "__main__":
     #train_model()
